@@ -1,8 +1,14 @@
 package lazywriter
 
 import (
-	"fmt"
 	"time"
+)
+
+type state int
+
+const (
+	notStarted state = iota
+	running
 )
 
 // LazyWriter -
@@ -11,6 +17,7 @@ type LazyWriter struct {
 	Name     string
 	store    *Cache
 	ticker   *time.Ticker
+	state    state
 }
 
 // LazyObject -
@@ -18,6 +25,8 @@ type LazyObject struct {
 	ID       string
 	Data     interface{}
 	WriterFn WriterFn
+	updated  bool
+	locked   bool
 }
 
 // WriterFn -
@@ -38,12 +47,13 @@ func NewLazyWriter(name string, interval time.Duration) *LazyWriter {
 		Interval: interval,
 		store:    NewStore(),
 		ticker:   time.NewTicker(interval),
+		state:    notStarted,
 	}
 }
 
 // NewLazyObject -
-func NewLazyObject(id string, data interface{}, writerFn WriterFn) *LazyObject {
-	return &LazyObject{
+func NewLazyObject(id string, data interface{}, writerFn WriterFn) LazyObject {
+	return LazyObject{
 		ID:       id,
 		Data:     data,
 		WriterFn: writerFn,
@@ -52,12 +62,16 @@ func NewLazyObject(id string, data interface{}, writerFn WriterFn) *LazyObject {
 
 // Start - Start Lazy Writer task in new go routine
 func (lw *LazyWriter) Start() {
+	if lw.state == running {
+		return
+	}
+
+	lw.state = running
+
 	go func() {
 		for {
 			select {
 			case <-lw.ticker.C:
-				// lw.store.Iterate()
-				fmt.Println("Processing lazy objects")
 				lw.processWriter()
 			}
 		}
@@ -65,25 +79,45 @@ func (lw *LazyWriter) Start() {
 }
 
 func (lw *LazyWriter) processWriter() {
-	fmt.Println("In process Function")
-	// lw.store.m.Lock()
 	for _, id := range lw.store.Keys() {
 		lo := lw.store.MustGet(id)
-		if err := lo.WriterFn(lo.ID, lo.Data); err != nil {
-			fmt.Println("ERROR >> ", id, " >> ", err)
+		if lo == nil {
+			continue
 		}
+
+		if !lo.updated {
+			continue
+		}
+
+		lo.locked = true
+
+		if err := lo.WriterFn(lo.ID, lo.Data); err != nil {
+			// handle error
+		}
+
+		lo.locked = false
 	}
-	// lw.store.m.Unlock()
 }
 
 // Add -
-func (lw *LazyWriter) Add(lazyObj *LazyObject) {
-	// lw.store.SetDefault(lazyObj.ID, lazyObj)
-	fmt.Println("ADD >> ", lazyObj.ID)
-	lw.store.Add(lazyObj.ID, lazyObj)
+func (lw *LazyWriter) Add(lazyObj LazyObject) {
+	lo, ok := lw.store.Get(lazyObj.ID)
+	for lo.locked {
+		// TODO: mechanism to lock lo when the data is being written
+		// better one, not feasible with go routines.
+	}
+	if ok {
+		lo.updated = true
+		lo.Data = lazyObj.Data
+		lo.WriterFn = lazyObj.WriterFn
+		return
+	}
+	lazyObj.updated = true
+	lw.store.Add(lazyObj.ID, &lazyObj)
 }
 
 // Get -
-func (lw *LazyWriter) Get(key string) (*LazyObject, bool) {
-	return lw.store.Get(key)
+func (lw *LazyWriter) Get(key string) (LazyObject, bool) {
+	lo, ok := lw.store.Get(key)
+	return *lo, ok
 }

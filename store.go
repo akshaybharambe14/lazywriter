@@ -54,7 +54,7 @@ func (s *Cache) Keys() []string {
 		i++
 	}
 	s.m.Unlock()
-	return keys
+	return keys[:]
 }
 
 // // Iterate -
